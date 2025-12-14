@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gesture Particle System</title>
+
+<!-- Three.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<style>
+body {
+    margin: 0;
+    overflow: hidden;
+    background: #050505;
+    font-family: Arial, sans-serif;
+}
+
+canvas {
+    touch-action: none;
+}
+
+.input_video {
+    position: absolute;
+    bottom: 15px;
+    right: 15px;
+    width: 180px;
+    border-radius: 10px;
+    transform: scaleX(-1);
+    opacity: 0.85;
+}
+
+#loading {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: white;
+    background: rgba(0,0,0,0.8);
+    z-index: 10;
+}
+</style>
+</head>
+
+<body>
+
+<div id="loading">Initializing Camera & Gestures…</div>
+<video class="input_video" style="display:none;"></video>
+
+
+<script>
+/* =========================
+   CONFIG
+========================= */
+const SHAPES = ['sphere','heart','saturn','flower','helix','random'];
+let shapeIndex = 0;
+const PARTICLE_COUNT = window.innerWidth < 768 ? 6000 : 10000;
+
+/* =========================
+   PARTICLE TEXTURE
+========================= */
+function createParticleTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 32;
+
+    const ctx = canvas.getContext('2d');
+    const g = ctx.createRadialGradient(16,16,0,16,16,16);
+    g.addColorStop(0,'rgba(255,255,255,1)');
+    g.addColorStop(0.3,'rgba(255,255,255,0.6)');
+    g.addColorStop(0.6,'rgba(255,255,255,0.2)');
+    g.addColorStop(1,'rgba(255,255,255,0)');
+
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,32,32);
+
+    const tex = new THREE.Texture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    return tex;
+}
+
+/* =========================
+   THREE BASICS
+========================= */
+let scene, camera, renderer, particles;
+let geometry, material;
+const positions = new Float32Array(PARTICLE_COUNT * 3);
+const targets = new Float32Array(PARTICLE_COUNT * 3);
+const clock = new THREE.Clock();
+
+let globalScale = 1;        // persistent zoom
+const MIN_SCALE = 0.02;
+const MAX_SCALE = 5000;
+
+
+/* =========================
+   INTERACTION STATE
+========================= */
+let handPresent = false;
+let handX = 0, handY = 0, pinchStrength = 0;
+let isTouching = false;
+let lastX = 0, lastY = 0, lastDist = 0, lastTap = 0;
+let lastPinchStrength = 0;
+let freezeRotation = false;   
+
+// Smoothing (reduces gesture sensitivity)
+let smoothHandX = 0;
+let smoothHandY = 0;
+
+/* =========================
+   INIT ORDER (IMPORTANT)
+========================= */
+init();
+addTouchControls();
+setupHands();
+
+/* =========================
+   INIT
+========================= */
+function init() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x050505, 0.002);
+camera = new THREE.PerspectiveCamera(
+    75,
+    innerWidth / innerHeight,
+    0.1,
+    20000  
+);
+camera.position.z = 80;
+
+
+    renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    geometry = new THREE.BufferGeometry();
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+        positions[i3]     = (Math.random()-0.5) * 100;
+        positions[i3 + 1] = (Math.random()-0.5) * 100;
+        positions[i3 + 2] = (Math.random()-0.5) * 100;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions,3));
+
+    material = new THREE.PointsMaterial({
+        size: 0.60,
+        map: createParticleTexture(),
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        sizeAttenuation: true
+    });
+
+    particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    setShape('sphere');
+    animate();
+}
+
+window.addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+});
+
+/* =========================
+   SHAPES
+========================= */
+function setShape(type) {
+    shapeIndex = SHAPES.indexOf(type);
+    const s = 60;
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+        let x,y,z;
+
+        if (type === 'sphere') {
+            const phi = Math.acos(-1 + (2*i)/PARTICLE_COUNT);
+            const theta = Math.sqrt(PARTICLE_COUNT * Math.PI) * phi;
+            const r = s * (0.7 + Math.random()*0.3); // hollow-ish
+            x = r * Math.cos(theta) * Math.sin(phi);
+            y = r * Math.sin(theta) * Math.sin(phi);
+            z = r * Math.cos(phi);
+        } else if (type === 'helix') {
+            const t = i/PARTICLE_COUNT * Math.PI * 20;
+            x = Math.cos(t) * s * 0.6;
+            z = Math.sin(t) * s * 0.6;
+            y = (i/PARTICLE_COUNT - 0.5) * s * 3;
+        } else {
+            x = (Math.random()-0.5) * s * 3;
+            y = (Math.random()-0.5) * s * 3;
+            z = (Math.random()-0.5) * s * 3;
+        }
+
+        targets[i3]     = x;
+        targets[i3 + 1] = y;
+        targets[i3 + 2] = z;
+    }
+}
+
+function nextShape() {
+    shapeIndex = (shapeIndex + 1) % SHAPES.length;
+    setShape(SHAPES[shapeIndex]);
+}
+
+function prevShape() {
+    shapeIndex = (shapeIndex - 1 + SHAPES.length) % SHAPES.length;
+    setShape(SHAPES[shapeIndex]);
+}
+
+/* =========================
+   MEDIAPIPE HANDS
+========================= */
+function setupHands() {
+    const hands = new Hands({
+        locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults(res => {
+        document.getElementById('loading').style.display = 'none';
+
+        if (res.multiHandLandmarks?.length) {
+            handPresent = true;
+            const lm = res.multiHandLandmarks[0];
+
+            handX = (1 - lm[9].x - 0.5) * 2;
+            handY = -(lm[9].y - 0.5) * 2;
+
+            const dx = lm[4].x - lm[8].x;
+            const dy = lm[4].y - lm[8].y;
+            const dz = lm[4].z - lm[8].z;
+
+            const newPinch = THREE.MathUtils.clamp(
+    THREE.MathUtils.mapLinear(Math.sqrt(dx*dx+dy*dy+dz*dz), 0.02, 0.15, 1, 0),
+    0, 1
+);
+// ✊ FIST DETECTION (freeze rotation)
+const indexFolded  = lm[8].y  > lm[6].y;
+const middleFolded = lm[12].y > lm[10].y;
+const ringFolded   = lm[16].y > lm[14].y;
+const pinkyFolded  = lm[20].y > lm[18].y;
+
+// All fingers folded = fist
+freezeRotation = indexFolded && middleFolded && ringFolded && pinkyFolded;
+
+// Zoom delta (THIS is the key)
+const pinchDelta = newPinch - lastPinchStrength;
+globalScale -= pinchDelta * 1.5;   // zoom sensitivity
+globalScale = THREE.MathUtils.clamp(
+    globalScale,
+    MIN_SCALE,
+    MAX_SCALE
+);
+
+lastPinchStrength = newPinch;
+pinchStrength = newPinch;
+
+        } else {
+            handPresent = false;
+            pinchStrength *= 0.95;
+        }
+    });
+
+    const video = document.querySelector('.input_video');
+    const cam = new Camera(video, {
+        onFrame: async () => hands.send({ image: video }),
+        width: 640,
+        height: 480
+    });
+    cam.start();
+}
+
+/* =========================
+   TOUCH GESTURES
+========================= */
+function addTouchControls() {
+    const el = renderer.domElement;
+
+    el.addEventListener('touchstart', e => {
+        isTouching = true;
+
+        if (e.touches.length === 1) {
+            lastX = e.touches[0].clientX;
+            lastY = e.touches[0].clientY;
+        }
+
+        if (e.touches.length === 2) {
+            lastDist = getDist(e.touches); // initialize pinch distance
+        }
+    });
+
+    el.addEventListener('touchmove', e => {
+        if (!isTouching) return;
+
+        // One-finger rotate
+        if (e.touches.length === 1) {
+            const dx = e.touches[0].clientX - lastX;
+            const dy = e.touches[0].clientY - lastY;
+
+            particles.rotation.y += dx * 0.003;
+            particles.rotation.x += dy * 0.003;
+
+            lastX = e.touches[0].clientX;
+            lastY = e.touches[0].clientY;
+        }
+
+        // Two-finger pinch zoom
+        if (e.touches.length === 2) {
+            const d = getDist(e.touches);
+            const delta = d - lastDist;
+
+            globalScale += delta * 0.008; // smooth zoom
+            globalScale = THREE.MathUtils.clamp(
+                globalScale,
+                MIN_SCALE,
+                MAX_SCALE
+            );
+
+            lastDist = d;
+        }
+
+        e.preventDefault();
+    }, { passive: false });
+
+    el.addEventListener('touchend', () => {
+        isTouching = false;
+    });
+}
+function getDist(t) {
+    const dx = t[0].clientX - t[1].clientX;
+    const dy = t[0].clientY - t[1].clientY;
+    return Math.sqrt(dx*dx + dy*dy);
+}
+
+/* =========================
+   ANIMATION
+========================= */
+function animate() {
+    requestAnimationFrame(animate);
+
+    const pos = geometry.attributes.position.array;
+
+
+    globalScale = THREE.MathUtils.clamp(globalScale, MIN_SCALE, MAX_SCALE);
+
+
+   // Rotation
+if (handPresent && !freezeRotation) {
+   // Smooth hand movement
+smoothHandX += (handX - smoothHandX) * 0.07;
+smoothHandY += (handY - smoothHandY) * 0.07;
+
+particles.rotation.y += smoothHandX * 0.02;
+particles.rotation.x -= smoothHandY * 0.02;
+
+} else if (!handPresent) {
+    particles.rotation.y += 0.002;
+}
+
+
+    // Apply GLOBAL SCALE (this is the magic)
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+
+        pos[i3]     += ((targets[i3]     * globalScale) - pos[i3])     * 0.05;
+        pos[i3 + 1] += ((targets[i3 + 1] * globalScale) - pos[i3 + 1]) * 0.05;
+        pos[i3 + 2] += ((targets[i3 + 2] * globalScale) - pos[i3 + 2]) * 0.05;
+    }
+
+    geometry.attributes.position.needsUpdate = true;
+    renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
