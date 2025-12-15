@@ -16,5 +16,5 @@ A 3D interactive particle experience using:
 - Gesture-based interaction
 - I will be adding more shapes in future. Till then good luck.
 
-## Live Demo[
-👉 https://your-username.github.io/your-repo-name/](https://pixelated-n3rd.github.io/COSMOS-PARTICLES/
+## Live Demo
+https://pixelated-n3rd.github.io/COSMOS-PARTICLES/
