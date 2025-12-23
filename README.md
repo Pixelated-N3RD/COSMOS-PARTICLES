@@ -7,7 +7,7 @@ A 3D interactive particle experience using:
 - Three.js
 - MediaPipe Hands
 - Touch & Gesture controls
-
+(gesture control needs to access your camera and nothing more than that so you allow the access)
 ## Features
 - Hand pinch to zoom
 - Fist to freeze rotation (just like holding a ball infront of the camera)
